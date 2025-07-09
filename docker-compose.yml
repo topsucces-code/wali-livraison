@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  # Base de données PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: wali-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wali_livraison
+      POSTGRES_USER: wali_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wali_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - wali-network
+
+  # Redis pour les sessions et cache
+  redis:
+    image: redis:7-alpine
+    container_name: wali-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - wali-network
+
+  # Backend API NestJS
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: wali-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      DATABASE_URL: postgresql://wali_user:${POSTGRES_PASSWORD:-wali_password}@postgres:5432/wali_livraison
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./apps/api:/app
+      - /app/node_modules
+    networks:
+      - wali-network
+
+  # Frontend Client Web
+  client-web:
+    build:
+      context: .
+      dockerfile: apps/client-web/Dockerfile
+    container_name: wali-client-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api/v1}
+      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/client-web:/app
+      - /app/node_modules
+    networks:
+      - wali-network
+
+  # Panel d'Administration
+  admin-panel:
+    build:
+      context: .
+      dockerfile: apps/admin-panel/Dockerfile
+    container_name: wali-admin-panel
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api/v1}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3002}
+    ports:
+      - "3002:3002"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/admin-panel:/app
+      - /app/node_modules
+    networks:
+      - wali-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: wali-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - api
+      - client-web
+      - admin-panel
+    networks:
+      - wali-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  wali-network:
+    driver: bridge
